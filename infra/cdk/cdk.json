@@ -1,0 +1,10 @@
+{
+  "app": "npx ts-node --prefer-ts-exts src/bin/app.ts",
+  "watch": {
+    "include": ["src/**"],
+    "exclude": ["node_modules", "dist", "cdk.out"]
+  },
+  "context": {
+    "@aws-cdk/core:stackRelativeExports": true
+  }
+}

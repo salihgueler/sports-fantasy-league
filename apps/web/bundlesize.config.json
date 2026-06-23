@@ -1,0 +1,19 @@
+{
+  "files": [
+    {
+      "path": "dist/assets/index-*.js",
+      "maxSize": "200 kB",
+      "compression": "gzip"
+    },
+    {
+      "path": "dist/assets/vendor-*.js",
+      "maxSize": "150 kB",
+      "compression": "gzip"
+    },
+    {
+      "path": "dist/assets/vendor-state-*.js",
+      "maxSize": "50 kB",
+      "compression": "gzip"
+    }
+  ]
+}

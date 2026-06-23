@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * "Matchday" brand theme — shadcn token layer.
+ * Brand palette: Kit Blue #2A398D (primary), Pitch Green #3CAC3B (success/live),
+ * Strike Red #E61D25 (destructive). Values are HSL channels for hsl(var(--token)).
+ */
+@layer base {
+  :root {
+    --background: 228 33% 97%;
+    --foreground: 230 42% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 230 42% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 230 42% 9%;
+
+    /* Kit Blue */
+    --primary: 231 54% 36%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 228 30% 94%;
+    --secondary-foreground: 231 40% 25%;
+
+    --muted: 228 30% 94%;
+    --muted-foreground: 222 12% 42%;
+
+    --accent: 228 30% 92%;
+    --accent-foreground: 231 40% 25%;
+
+    /* Pitch Green */
+    --success: 120 49% 42%;
+    --success-foreground: 0 0% 100%;
+
+    /* Strike Red */
+    --destructive: 358 80% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 228 20% 88%;
+    --input: 228 20% 88%;
+    --ring: 231 54% 36%;
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 230 30% 7%;
+    --foreground: 228 30% 96%;
+
+    --card: 230 24% 11%;
+    --card-foreground: 228 30% 96%;
+
+    --popover: 230 24% 11%;
+    --popover-foreground: 228 30% 96%;
+
+    --primary: 226 70% 64%;
+    --primary-foreground: 230 40% 10%;
+
+    --secondary: 230 18% 18%;
+    --secondary-foreground: 228 30% 96%;
+
+    --muted: 230 18% 18%;
+    --muted-foreground: 228 12% 66%;
+
+    --accent: 230 18% 20%;
+    --accent-foreground: 228 30% 96%;
+
+    --success: 120 45% 52%;
+    --success-foreground: 230 40% 8%;
+
+    --destructive: 358 72% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 230 16% 22%;
+    --input: 230 16% 24%;
+    --ring: 226 70% 64%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display tracking-tight;
+  }
+}
+
+@layer components {
+  /*
+   * Signature element: the tricolor stripe (Pitch Green / Kit Blue / Strike Red)
+   * that ties the three brand colors into one identity.
+   */
+  .tricolor-stripe {
+    height: 3px;
+    width: 100%;
+    background-image: linear-gradient(
+      90deg,
+      #3cac3b 0%,
+      #3cac3b 33.33%,
+      #2a398d 33.33%,
+      #2a398d 66.66%,
+      #e61d25 66.66%,
+      #e61d25 100%
+    );
+  }
+
+  /* Tabular, scoreboard-style numerals for scores and points. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
