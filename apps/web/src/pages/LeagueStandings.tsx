@@ -16,7 +16,7 @@ interface StandingsEntry {
   fantasyTeamId: string;
   teamName: string;
   rank: number;
-  points: number;
+  totalPoints: number;
   gameweekPoints: number;
 }
 
@@ -77,7 +77,7 @@ export function LeagueStandings() {
                     </TableCell>
                     <TableCell className="font-medium text-foreground">{entry.teamName}</TableCell>
                     <TableCell className="text-right font-mono tabular-nums font-semibold text-foreground">
-                      {entry.points}
+                      {entry.totalPoints}
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums text-muted-foreground">
                       {entry.gameweekPoints}

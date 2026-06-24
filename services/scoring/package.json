@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.700.0",
     "@fantasy/shared": "*"
   },
   "devDependencies": {

@@ -13,6 +13,7 @@
  */
 import type { Handler } from 'aws-lambda';
 import { FantasyRepository, buildCompetitionKey } from '@fantasy/shared';
+import { recomputeTeamTotals } from '../recompute-team-totals.js';
 
 const TABLE_NAME = process.env.TABLE_NAME;
 const COMPETITION_ID = process.env.COMPETITION_ID ?? 'world-cup-2026';
@@ -23,44 +24,95 @@ const TEAMS_URL =
   'https://raw.githubusercontent.com/openfootball/worldcup.json/refs/heads/master/2026/worldcup.teams.json';
 const LIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
 
-interface RawGoal { name?: string; minute?: string | number; owngoal?: boolean; og?: boolean; }
-interface RawMatch {
-  num?: number; round?: string; stage?: string; name?: string; date?: string; time?: string;
-  team1?: unknown; team2?: unknown; score?: { ft?: number[]; ht?: number[] };
-  goals1?: RawGoal[]; goals2?: RawGoal[];
+interface RawGoal {
+  name?: string;
+  minute?: string | number;
+  owngoal?: boolean;
+  og?: boolean;
 }
-interface RawRound { name?: string; round?: string; matches?: RawMatch[]; }
-interface RawTeam { name?: string; name_normalised?: string; code?: string; fifa_code?: string; }
+interface RawMatch {
+  num?: number;
+  round?: string;
+  stage?: string;
+  name?: string;
+  date?: string;
+  time?: string;
+  team1?: unknown;
+  team2?: unknown;
+  score?: { ft?: number[]; ht?: number[] };
+  goals1?: RawGoal[];
+  goals2?: RawGoal[];
+}
+interface RawRound {
+  name?: string;
+  round?: string;
+  matches?: RawMatch[];
+}
+interface RawTeam {
+  name?: string;
+  name_normalised?: string;
+  code?: string;
+  fifa_code?: string;
+}
 
 interface FixtureItem extends Record<string, unknown> {
-  PK: string; SK: string; fixtureId: string; gameweek: number;
-  homeTeamId: string; awayTeamId: string; status: string;
+  PK: string;
+  SK: string;
+  fixtureId: string;
+  gameweek: number;
+  homeTeamId: string;
+  awayTeamId: string;
+  status: string;
 }
 interface PlayerItem extends Record<string, unknown> {
-  PK: string; SK: string; playerId: string; name: string;
-  position: string; realTeamId: string; price: number; totalPoints: number;
+  PK: string;
+  SK: string;
+  playerId: string;
+  name: string;
+  position: string;
+  realTeamId: string;
+  price: number;
+  totalPoints: number;
 }
-interface Gameweek { gameweek: number; transferDeadline: string; status: string; }
+interface Gameweek {
+  gameweek: number;
+  transferDeadline: string;
+  status: string;
+}
 interface CompetitionItem extends Record<string, unknown> {
-  PK: string; SK: string; competitionId: string; scoringRulesetId: string;
-  status: string; schedule: { gameweeks: Gameweek[] };
+  PK: string;
+  SK: string;
+  competitionId: string;
+  scoringRulesetId: string;
+  status: string;
+  schedule: { gameweeks: Gameweek[] };
 }
 interface RulesetItem extends Record<string, unknown> {
   rules?: { stat: string; position?: string; points: number }[];
 }
 
 function slugify(v: string): string {
-  return v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return v
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 function deriveCode(name: string): string {
-  const l = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z]/g, '');
+  const l = name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z]/g, '');
   return (l.slice(0, 3) || 'UNK').toUpperCase().padEnd(3, 'X');
 }
 function pickArray<T>(raw: unknown, keys: string[]): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === 'object') {
-    for (const k of keys) { const v = (raw as Record<string, unknown>)[k]; if (Array.isArray(v)) return v as T[]; }
+    for (const k of keys) {
+      const v = (raw as Record<string, unknown>)[k];
+      if (Array.isArray(v)) return v as T[];
+    }
   }
   return [];
 }
@@ -97,17 +149,29 @@ function resolveTeamId(team: unknown, codeMap: Map<string, string>): string {
 }
 function earliest(matches: RawMatch[]): number {
   let min = Number.POSITIVE_INFINITY;
-  for (const m of matches) { if (!m.date) continue; const ts = Date.parse(parseKickoff(m.date, m.time)); if (ts < min) min = ts; }
+  for (const m of matches) {
+    if (!m.date) continue;
+    const ts = Date.parse(parseKickoff(m.date, m.time));
+    if (ts < min) min = ts;
+  }
   return Number.isFinite(min) ? min : Number.POSITIVE_INFINITY;
 }
 function buildRounds(raw: unknown): { name: string; matches: RawMatch[] }[] {
   if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).rounds)) {
     const rounds = (raw as Record<string, unknown>).rounds as RawRound[];
-    return rounds.map((r, i) => ({ name: r.name ?? r.round ?? `Round ${i + 1}`, matches: Array.isArray(r.matches) ? r.matches : [] }));
+    return rounds.map((r, i) => ({
+      name: r.name ?? r.round ?? `Round ${i + 1}`,
+      matches: Array.isArray(r.matches) ? r.matches : [],
+    }));
   }
   const matches = pickArray<RawMatch>(raw, ['matches']);
   const groups = new Map<string, RawMatch[]>();
-  for (const m of matches) { const key = m.round ?? m.stage ?? m.name ?? 'Round 1'; const b = groups.get(key); if (b) b.push(m); else groups.set(key, [m]); }
+  for (const m of matches) {
+    const key = m.round ?? m.stage ?? m.name ?? 'Round 1';
+    const b = groups.get(key);
+    if (b) b.push(m);
+    else groups.set(key, [m]);
+  }
   const rounds = Array.from(groups.entries()).map(([name, ms]) => ({ name, matches: ms }));
   rounds.sort((a, b) => earliest(a.matches) - earliest(b.matches));
   return rounds;
@@ -144,7 +208,10 @@ export const handler: Handler = async () => {
   const repo = new FantasyRepository({ tableName: TABLE_NAME });
   const now = Date.now();
 
-  const [fixturesRaw, teamsRaw] = await Promise.all([fetchJson(FIXTURES_URL), fetchJson(TEAMS_URL)]);
+  const [fixturesRaw, teamsRaw] = await Promise.all([
+    fetchJson(FIXTURES_URL),
+    fetchJson(TEAMS_URL),
+  ]);
   const codeMap = buildTeamCodeMap(pickArray<RawTeam>(teamsRaw, ['teams']));
 
   const competition = await repo.get<CompetitionItem>(`COMPETITION#${COMPETITION_ID}`, 'META');
@@ -153,7 +220,8 @@ export const handler: Handler = async () => {
   const goalPointsByPos: Record<string, number> = { FWD: 4, MID: 5, DEF: 6, GK: 6 };
   const ruleset = await repo.get<RulesetItem>(`RULESET#${competition.scoringRulesetId}`, 'META');
   if (ruleset?.rules) {
-    for (const r of ruleset.rules) if (r.stat === 'goals' && r.position) goalPointsByPos[r.position] = r.points;
+    for (const r of ruleset.rules)
+      if (r.stat === 'goals' && r.position) goalPointsByPos[r.position] = r.points;
   }
 
   const fixtures = await queryAll<FixtureItem>(repo, {
@@ -190,7 +258,11 @@ export const handler: Handler = async () => {
       const homeCode = resolveTeamId(m.team1, codeMap);
       const awayCode = resolveTeamId(m.team2, codeMap);
       const ft = m.score?.ft;
-      const hasScore = Array.isArray(ft) && ft.length >= 2 && typeof ft[0] === 'number' && typeof ft[1] === 'number';
+      const hasScore =
+        Array.isArray(ft) &&
+        ft.length >= 2 &&
+        typeof ft[0] === 'number' &&
+        typeof ft[1] === 'number';
 
       let status: string;
       if (hasScore) status = 'finished';
@@ -230,10 +302,21 @@ export const handler: Handler = async () => {
 
   for (const u of fixtureUpdates) {
     if (u.score) {
-      await repo.update(u.fixture.PK, u.fixture.SK, 'SET homeScore = :h, awayScore = :a, #s = :st',
-        { '#s': 'status' }, { ':h': u.score[0], ':a': u.score[1], ':st': u.status });
+      await repo.update(
+        u.fixture.PK,
+        u.fixture.SK,
+        'SET homeScore = :h, awayScore = :a, #s = :st',
+        { '#s': 'status' },
+        { ':h': u.score[0], ':a': u.score[1], ':st': u.status },
+      );
     } else {
-      await repo.update(u.fixture.PK, u.fixture.SK, 'SET #s = :st', { '#s': 'status' }, { ':st': u.status });
+      await repo.update(
+        u.fixture.PK,
+        u.fixture.SK,
+        'SET #s = :st',
+        { '#s': 'status' },
+        { ':st': u.status },
+      );
     }
   }
 
@@ -241,34 +324,61 @@ export const handler: Handler = async () => {
   for (const s of scorers) {
     const pts = s.goals * (goalPointsByPos[s.item.position] ?? 5);
     const gsk = `POINTS#${String(pts).padStart(10, '0')}`;
-    await repo.update(s.item.PK, s.item.SK, 'SET totalPoints = :tp, GSI2SK = :gsk',
-      undefined, { ':tp': pts, ':gsk': gsk });
+    await repo.update(s.item.PK, s.item.SK, 'SET totalPoints = :tp, GSI2SK = :gsk', undefined, {
+      ':tp': pts,
+      ':gsk': gsk,
+    });
   }
+
+  // Roll the refreshed player points up into each fantasy team's cumulative
+  // total so league standings reflect goals scored.
+  const teamTotals = await recomputeTeamTotals(repo, COMPETITION_ID);
 
   const gameweeks: Gameweek[] = competition.schedule.gameweeks.map((gw) => {
     const statuses = gwStatuses.get(gw.gameweek) ?? [];
     let status: string;
     if (statuses.length > 0 && statuses.every((s) => s === 'finished')) status = 'finalized';
-    else if (statuses.some((s) => s === 'live') || (Date.parse(gw.transferDeadline) <= now && statuses.some((s) => s === 'finished'))) status = 'live';
+    else if (
+      statuses.some((s) => s === 'live') ||
+      (Date.parse(gw.transferDeadline) <= now && statuses.some((s) => s === 'finished'))
+    )
+      status = 'live';
     else status = 'upcoming';
     return { ...gw, status };
   });
 
   let compStatus: string;
-  if (gameweeks.length > 0 && gameweeks.every((g) => g.status === 'finalized')) compStatus = 'completed';
-  else if (gameweeks.some((g) => g.status === 'live' || g.status === 'finalized')) compStatus = 'active';
+  if (gameweeks.length > 0 && gameweeks.every((g) => g.status === 'finalized'))
+    compStatus = 'completed';
+  else if (gameweeks.some((g) => g.status === 'live' || g.status === 'finalized'))
+    compStatus = 'active';
   else compStatus = 'upcoming';
 
-  const startTs = Number.isFinite(earliestOverall) ? new Date(earliestOverall).toISOString() : new Date().toISOString();
+  const startTs = Number.isFinite(earliestOverall)
+    ? new Date(earliestOverall).toISOString()
+    : new Date().toISOString();
   const endTs = Number.isFinite(latestOverall) ? new Date(latestOverall).toISOString() : startTs;
-  const compKeys = buildCompetitionKey({ compId: COMPETITION_ID, status: compStatus, startTs, endTs });
-  await repo.put({ ...competition, ...compKeys, status: compStatus, schedule: { gameweeks }, updatedAt: new Date().toISOString() });
+  const compKeys = buildCompetitionKey({
+    compId: COMPETITION_ID,
+    status: compStatus,
+    startTs,
+    endTs,
+  });
+  await repo.put({
+    ...competition,
+    ...compKeys,
+    status: compStatus,
+    schedule: { gameweeks },
+    updatedAt: new Date().toISOString(),
+  });
 
   const result = {
     competitionId: COMPETITION_ID,
     source: 'openfootball',
     fixturesUpdated: fixtureUpdates.length,
     playersScored: scorers.length,
+    teamsUpdated: teamTotals.teamsUpdated,
+    teamsScanned: teamTotals.teamsScanned,
     competitionStatus: compStatus,
     gameweeks: gameweeks.map((g) => ({ gameweek: g.gameweek, status: g.status })),
   };

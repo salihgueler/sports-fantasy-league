@@ -140,6 +140,11 @@ export class LeagueService {
       );
     }
 
+    // The creator must already have a fantasy team for the competition. The
+    // membership is linked to that team's real id (consistent with joinLeague)
+    // so cumulative points and gameweek scores resolve to the same team.
+    const fantasyTeam = await this.resolveFantasyTeam(userId, input.competitionId);
+
     // Generate a unique join code
     const joinCode = await this.generateUniqueJoinCode();
 
@@ -165,9 +170,8 @@ export class LeagueService {
 
     await this.repo.put(leagueItem);
 
-    // Add the creator as the first member.
-    // The fantasyTeamId is derived from userId + competitionId.
-    const fantasyTeamId = `${userId}:${input.competitionId}`;
+    // Add the creator as the first member, linked to their real fantasy team.
+    const fantasyTeamId = fantasyTeam.fantasyTeamId;
 
     const memberKeys = buildLeagueMembershipKey({ leagueId, fantasyTeamId, userId });
 
@@ -442,6 +446,11 @@ export class LeagueService {
 
     const members = membersResult.items;
 
+    // The MEMBER# item stores neither team name nor points. Resolve each
+    // member's fantasy team to populate teamName + cumulative totalPoints
+    // before computing standings.
+    await this.enrichMembersWithTeams(members, leagueMeta.competitionId);
+
     // R13.7: fewer than 2 members → single-entry list
     if (members.length < 2) {
       if (members.length === 0) {
@@ -580,6 +589,36 @@ export class LeagueService {
   }
 
   // ─── Private Helpers ────────────────────────────────────────────────────
+
+  /**
+   * Resolve each member's fantasy team (by userId + competitionId) and populate
+   * teamName + totalPoints on the member record, so the standings computations
+   * can read them. Teams are resolved in parallel; a missing team defaults to
+   * an empty name and 0 points.
+   */
+  private async enrichMembersWithTeams(
+    members: LeagueMemberItem[],
+    competitionId: string,
+  ): Promise<void> {
+    await Promise.all(
+      members.map(async (member) => {
+        const teamsResult = await this.repo.query<FantasyTeamItem>({
+          keyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+          expressionAttributeValues: {
+            ':pk': `USER#${member.userId}`,
+            ':skPrefix': `TEAM#${competitionId}`,
+          },
+        });
+
+        const team =
+          teamsResult.items.find((t) => t.fantasyTeamId === member.fantasyTeamId) ??
+          teamsResult.items[0];
+
+        member.teamName = team?.name ?? '';
+        member.totalPoints = team?.totalPoints ?? 0;
+      }),
+    );
+  }
 
   /**
    * Classic standings: descending cumulative total points.
@@ -763,22 +802,7 @@ export class LeagueService {
     }
 
     // 3. Check user has a fantasy team for the competition
-    const teamsResult = await this.repo.query<FantasyTeamItem>({
-      keyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-      expressionAttributeValues: {
-        ':pk': `USER#${userId}`,
-        ':skPrefix': `TEAM#${competitionId}`,
-      },
-    });
-
-    if (teamsResult.items.length === 0) {
-      throw new AppError(
-        'NO_FANTASY_TEAM',
-        'You must have a fantasy team for this competition to join the league',
-      );
-    }
-
-    const fantasyTeam = teamsResult.items[0];
+    const fantasyTeam = await this.resolveFantasyTeam(userId, competitionId);
 
     // 4. Check user is not already a member (via GSI1: USER#userId / LEAGUE#leagueId)
     const existingMembership = await this.repo.query<LeagueMembershipItem>({
@@ -815,6 +839,33 @@ export class LeagueService {
     await this.repo.update(`LEAGUE#${leagueId}`, 'META', 'SET memberCount = :c', undefined, {
       ':c': currentMemberCount + 1,
     });
+  }
+
+  /**
+   * Resolve the user's fantasy team for a competition. The team's real
+   * fantasyTeamId is the canonical link used by memberships, gameweek scores,
+   * and cumulative totals. Throws NO_FANTASY_TEAM when no team exists yet.
+   */
+  private async resolveFantasyTeam(
+    userId: string,
+    competitionId: string,
+  ): Promise<FantasyTeamItem> {
+    const teamsResult = await this.repo.query<FantasyTeamItem>({
+      keyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+      expressionAttributeValues: {
+        ':pk': `USER#${userId}`,
+        ':skPrefix': `TEAM#${competitionId}`,
+      },
+    });
+
+    if (teamsResult.items.length === 0) {
+      throw new AppError(
+        'NO_FANTASY_TEAM',
+        'You must have a fantasy team for this competition to join the league',
+      );
+    }
+
+    return teamsResult.items[0];
   }
 
   /**

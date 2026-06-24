@@ -312,8 +312,8 @@ export class DraftService {
   /**
    * Delete a fantasy team owned by the user, and clean up any league
    * memberships joined with that team (decrementing each league's member count).
-   * League memberships created via the league-creator derived id are not matched
-   * and are left untouched.
+   * Memberships are linked by the team's real fantasyTeamId (for both created
+   * and joined leagues), so all of the user's memberships for this team match.
    */
   async deleteTeam(userId: string, fantasyTeamId: string): Promise<void> {
     const teamResult = await this.repo.query<FantasyTeamItem>({

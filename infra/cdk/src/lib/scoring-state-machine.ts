@@ -22,8 +22,10 @@ export interface ScoringStateMachineProps extends cdk.NestedStackProps {
  *   EventBridge Scheduler → Step Function →
  *     FetchStats → ComputeScores → PersistScores → EmitScoreUpdated
  *
- * Input shape:
- *   { competitionId, gameweek, mode: 'live' | 'reconcile', fixtureIds: string[] }
+ * Input shape (from the EventBridge schedule):
+ *   { mode: 'live' | 'reconcile' }
+ * ResolveTargets expands this into per-competition/gameweek targets that the
+ * Map state scores in parallel.
  *
  * - In 'live' mode, scores are persisted as PROVISIONAL (R10.5)
  * - In 'reconcile' mode, scores are persisted as CONFIRMED (immutable) (R10.6)
@@ -77,11 +79,21 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
     // ─── FetchStats Lambda ────────────────────────────────────────────────────
     // Invokes the data provider adapter to fetch live scores for each fixture.
 
+    const resolveTargetsFn = new lambdaNode.NodejsFunction(this, 'ResolveTargetsFn', {
+      ...commonLambdaProps,
+      functionName: `ScoringResolveTargets-${props.stageName}`,
+      handler: 'handler',
+      entry: path.join(scoringRoot, 'handlers', 'resolve-targets.ts'),
+      description: 'Resolves active competitions and gameweeks to score',
+    });
+
+    props.table.grantReadData(resolveTargetsFn);
+
     this.fetchStatsFn = new lambdaNode.NodejsFunction(this, 'FetchStatsFn', {
       ...commonLambdaProps,
       functionName: `ScoringFetchStats-${props.stageName}`,
       handler: 'handler',
-      entry: path.join(dataSyncRoot, 'sync-service.ts'),
+      entry: path.join(dataSyncRoot, 'handlers', 'fetch-gameweek-stats-handler.ts'),
       description: 'Fetches live player stats from the data provider for scoring pipeline',
     });
 
@@ -97,7 +109,7 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       ...commonLambdaProps,
       functionName: `ScoringCompute-${props.stageName}`,
       handler: 'handler',
-      entry: path.join(scoringRoot, 'handler.ts'),
+      entry: path.join(scoringRoot, 'handlers', 'compute-scores.ts'),
       description: 'Pure scoring computation: player points and team gameweek scores',
     });
 
@@ -116,7 +128,7 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       ...commonLambdaProps,
       functionName: `ScoringPersist-${props.stageName}`,
       handler: 'handler',
-      entry: path.join(scoringRoot, 'handler.ts'),
+      entry: path.join(scoringRoot, 'handlers', 'persist-scores.ts'),
       description: 'Persists gameweek scores with provisional/confirmed lifecycle',
     });
 
@@ -133,7 +145,7 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       ...commonLambdaProps,
       functionName: `ScoringEmitEvent-${props.stageName}`,
       handler: 'handler',
-      entry: path.join(dataSyncRoot, 'sync-service.ts'),
+      entry: path.join(scoringRoot, 'handlers', 'emit-score-updated.ts'),
       description: 'Emits ScoreUpdated event to EventBridge for realtime delivery',
     });
 
@@ -147,17 +159,36 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       error: 'ScoringPipelineError',
     });
 
-    // Step 1: Fetch stats for all fixtures via Map state
+    // Step 1: Resolve scoring targets — expand { mode } into the active
+    // competitions, their current gameweeks, and fixtures to score.
+    const resolveTargets = new tasks.LambdaInvoke(this, 'ResolveTargets', {
+      lambdaFunction: resolveTargetsFn,
+      comment: 'Expand { mode } into per-competition/gameweek scoring targets',
+      payloadResponseOnly: true,
+      retryOnServiceExceptions: true,
+    });
+
+    resolveTargets.addRetry({
+      errors: ['Lambda.ServiceException', 'Lambda.TooManyRequestsException'],
+      interval: cdk.Duration.seconds(2),
+      maxAttempts: 3,
+      backoffRate: 2,
+    });
+
+    resolveTargets.addCatch(scoringFailed, {
+      errors: ['States.ALL'],
+      resultPath: '$.error',
+    });
+
+    // Per-target steps (run inside the Map iterator). Each receives
+    // { competitionId, gameweek, fixtureIds, dataProviderId, mode } and uses
+    // payloadResponseOnly so each Lambda's return becomes the next step's input.
+
+    // Step 2: Ensure this gameweek's PlayerMatchStats exist for each fixture.
     const fetchStats = new tasks.LambdaInvoke(this, 'FetchStats', {
       lambdaFunction: this.fetchStatsFn,
       comment: 'Fetch live player stats from data provider for each fixture',
-      payload: sfn.TaskInput.fromObject({
-        'competitionId.$': '$.competitionId',
-        'gameweek.$': '$.gameweek',
-        'fixtureIds.$': '$.fixtureIds',
-        'mode.$': '$.mode',
-      }),
-      resultPath: '$.fetchResult',
+      payloadResponseOnly: true,
       retryOnServiceExceptions: true,
     });
 
@@ -168,22 +199,11 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       backoffRate: 2,
     });
 
-    fetchStats.addCatch(scoringFailed, {
-      errors: ['States.ALL'],
-      resultPath: '$.error',
-    });
-
-    // Step 2: Compute scores using the pure scoring engine
+    // Step 3: Compute per-team gameweek scores from stats + ruleset + chips.
     const computeScores = new tasks.LambdaInvoke(this, 'ComputeScores', {
       lambdaFunction: this.computeScoresFn,
-      comment: 'Run pure scoring computation for all teams in the gameweek',
-      payload: sfn.TaskInput.fromObject({
-        'competitionId.$': '$.competitionId',
-        'gameweek.$': '$.gameweek',
-        'mode.$': '$.mode',
-        'fetchResult.$': '$.fetchResult',
-      }),
-      resultPath: '$.computeResult',
+      comment: 'Score every team in the competition gameweek',
+      payloadResponseOnly: true,
       retryOnServiceExceptions: true,
     });
 
@@ -194,22 +214,12 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       backoffRate: 2,
     });
 
-    computeScores.addCatch(scoringFailed, {
-      errors: ['States.ALL'],
-      resultPath: '$.error',
-    });
-
-    // Step 3: Persist scores — PROVISIONAL in live, CONFIRMED in reconciliation
+    // Step 4: Persist GWSCORE# (PROVISIONAL in live, CONFIRMED in reconcile)
+    // and roll the gameweek scores up into each team's total.
     const persistScores = new tasks.LambdaInvoke(this, 'PersistScores', {
       lambdaFunction: this.persistScoresFn,
-      comment: 'Upsert scores to DynamoDB (PROVISIONAL in live, CONFIRMED in reconcile)',
-      payload: sfn.TaskInput.fromObject({
-        'competitionId.$': '$.competitionId',
-        'gameweek.$': '$.gameweek',
-        'mode.$': '$.mode',
-        'computeResult.$': '$.computeResult',
-      }),
-      resultPath: '$.persistResult',
+      comment: 'Upsert scores to DynamoDB and roll up team totals',
+      payloadResponseOnly: true,
       retryOnServiceExceptions: true,
     });
 
@@ -220,20 +230,34 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
       backoffRate: 2,
     });
 
-    persistScores.addCatch(scoringFailed, {
+    // Fan out the fetch → compute → persist chain over every target.
+    const scoreTargets = new sfn.Map(this, 'ScoreTargets', {
+      comment: 'Score each competition/gameweek target',
+      itemsPath: sfn.JsonPath.stringAt('$.targets'),
+      itemSelector: {
+        'competitionId.$': '$$.Map.Item.Value.competitionId',
+        'gameweek.$': '$$.Map.Item.Value.gameweek',
+        'fixtureIds.$': '$$.Map.Item.Value.fixtureIds',
+        'dataProviderId.$': '$$.Map.Item.Value.dataProviderId',
+        'mode.$': '$.mode',
+      },
+      resultPath: '$.results',
+      maxConcurrency: 5,
+    });
+
+    scoreTargets.itemProcessor(fetchStats.next(computeScores).next(persistScores));
+
+    scoreTargets.addCatch(scoringFailed, {
       errors: ['States.ALL'],
       resultPath: '$.error',
     });
 
-    // Step 4: Emit ScoreUpdated event to EventBridge
+    // Step 5: Emit a ScoreUpdated event to EventBridge for realtime fan-out.
     const emitScoreUpdated = new tasks.LambdaInvoke(this, 'EmitScoreUpdated', {
       lambdaFunction: this.emitScoreUpdatedFn,
       comment: 'Publish ScoreUpdated event to EventBridge for realtime fan-out',
       payload: sfn.TaskInput.fromObject({
-        'competitionId.$': '$.competitionId',
-        'gameweek.$': '$.gameweek',
         'mode.$': '$.mode',
-        'eventBusName.$': `$.eventBusName`,
       }),
       resultPath: '$.emitResult',
       retryOnServiceExceptions: true,
@@ -257,9 +281,8 @@ export class ScoringStateMachineStack extends cdk.NestedStack {
     });
 
     // Chain the states
-    const definition = fetchStats
-      .next(computeScores)
-      .next(persistScores)
+    const definition = resolveTargets
+      .next(scoreTargets)
       .next(emitScoreUpdated)
       .next(scoringSucceeded);
 
