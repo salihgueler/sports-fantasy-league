@@ -18,7 +18,10 @@ export const CANONICAL_STATISTIC_MAP: Record<string, string> = {
   redCards: 'Red cards received',
   minutesPlayed: 'Minutes played',
   ownGoals: 'Own goals scored',
-  cleanSheets: 'Clean sheets (keeper/defender)',
+  // NOTE: singular `cleanSheet` — must match the scoring ruleset stat key
+  // (football-standard-v1 uses `cleanSheet`). A prior `cleanSheets` (plural)
+  // silently prevented clean-sheet points from ever being awarded.
+  cleanSheet: 'Clean sheet (keeper/defender)',
   penaltiesSaved: 'Penalties saved by goalkeeper',
   penaltiesMissed: 'Penalties missed by outfield player',
   penaltiesScored: 'Penalties scored',
@@ -42,6 +45,13 @@ export const CANONICAL_STATISTIC_MAP: Record<string, string> = {
   clearances: 'Clearances',
   blocks: 'Blocks',
   bonus: 'Bonus points awarded',
+  // ─── Basketball ─────────────────────────────────────────────────────────
+  // (`assists`, `blocks`, and `minutesPlayed` above are shared across sports.)
+  points: 'Points scored (basketball)',
+  rebounds: 'Total rebounds',
+  steals: 'Steals',
+  turnovers: 'Turnovers',
+  threePointersMade: 'Three-pointers made',
 };
 
 /**
@@ -83,7 +93,7 @@ export interface MapCanonicalStatsResult {
  */
 export function mapToCanonicalStats(
   raw: Record<string, unknown>,
-  statMap: Record<string, string>
+  statMap: Record<string, string>,
 ): MapCanonicalStatsResult {
   const mapped: Record<string, number> = {};
   const rejected: string[] = [];

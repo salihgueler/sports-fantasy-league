@@ -106,14 +106,19 @@
   .tricolor-stripe {
     height: 3px;
     width: 100%;
+    /*
+     * Bands follow the active competition's brand tokens (set by applyTheme),
+     * falling back to the Matchday palette (Pitch Green / Kit Blue / Strike Red)
+     * before any competition theme has been applied.
+     */
     background-image: linear-gradient(
       90deg,
-      #3cac3b 0%,
-      #3cac3b 33.33%,
-      #2a398d 33.33%,
-      #2a398d 66.66%,
-      #e61d25 66.66%,
-      #e61d25 100%
+      var(--color-accent-1, #3cac3b) 0%,
+      var(--color-accent-1, #3cac3b) 33.33%,
+      var(--color-primary, #2a398d) 33.33%,
+      var(--color-primary, #2a398d) 66.66%,
+      var(--color-accent-2, #e61d25) 66.66%,
+      var(--color-accent-2, #e61d25) 100%
     );
   }
 

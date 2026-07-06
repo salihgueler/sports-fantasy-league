@@ -14,7 +14,8 @@
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",
-    "seed:worldcup": "tsx scripts/seed-worldcup.ts"
+    "seed:worldcup": "tsx scripts/seed-worldcup.ts",
+    "seed:womens-basketball": "tsx scripts/seed-womens-basketball-world-cup.ts"
   },
   "engines": {
     "node": ">=20.0.0"
